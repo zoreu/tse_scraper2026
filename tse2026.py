@@ -3,9 +3,10 @@ import json
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ==========================================
-# TSE - ELEIÇÕES 2026 - SEGUNDO TURNO
-# ==========================================
+# ==========================================================
+# ELEIÇÕES 2026 - PRESIDENTE - SEGUNDO TURNO
+# Fonte: API oficial do TSE
+# ==========================================================
 
 BASE = "https://resultados.tse.jus.br/oficial/ele2026/6258/dados"
 
@@ -45,6 +46,10 @@ CANDIDATOS = {
 }
 
 
+# ==========================================================
+# FUNÇÕES
+# ==========================================================
+
 def baixar_json(url):
     req = urllib.request.Request(
         url,
@@ -55,176 +60,334 @@ def baixar_json(url):
         return json.loads(resposta.read().decode("utf-8"))
 
 
-def extrair_candidatos(dados):
+def extrair_votos(dados):
     votos = {"13": 0, "22": 0}
 
-    def percorrer(obj):
-        if isinstance(obj, dict):
-            # Candidato presidencial
-            if obj.get("n") in votos and "vap" in obj:
-                votos[obj["n"]] += int(obj["vap"] or 0)
-
-            for valor in obj.values():
-                percorrer(valor)
-
-        elif isinstance(obj, list):
-            for item in obj:
-                percorrer(item)
-
-    # Procura os candidatos dentro da estrutura da API
     for cargo in dados.get("carg", []):
-        percorrer(cargo)
+        for agregacao in cargo.get("agr", []):
+            for partido in agregacao.get("par", []):
+                for candidato in partido.get("cand", []):
+                    numero = candidato.get("n")
+
+                    if numero in votos:
+                        votos[numero] += int(
+                            candidato.get("vap") or 0
+                        )
 
     return votos
 
 
-def consultar_estado(sigla):
-    uf = sigla.lower()
+def consultar_local(codigo, nome):
+    codigo = codigo.lower()
 
     url = (
-        f"{BASE}/{uf}/"
-        f"{uf}-c0001-e006258-u.json"
+        f"{BASE}/{codigo}/"
+        f"{codigo}-c0001-e006258-u.json"
     )
 
     dados = baixar_json(url)
-    votos = extrair_candidatos(dados)
+    votos = extrair_votos(dados)
 
     return {
-        "sigla": sigla,
-        "estado": ESTADOS[sigla],
+        "sigla": codigo.upper(),
+        "estado": nome,
         "lula": votos["13"],
         "flavio": votos["22"]
     }
 
 
-def formatar(numero):
-    return f"{numero:,}".replace(",", ".")
+def formatar(valor):
+    return f"{valor:,}".replace(",", ".")
 
+
+# ==========================================================
+# TABELA COMPARATIVA DOS ESTADOS
+# ==========================================================
+
+def mostrar_comparativo(titulo, lista):
+
+    print("\n" + "=" * 105)
+    print(titulo)
+    print("=" * 105)
+
+    print(
+        f"{'UF':<5}"
+        f"{'Estado':<25}"
+        f"{'Votos Lula':>17}"
+        f"{'Votos Flávio':>19}"
+        f"{'Diferença':>17}"
+        f"{'Vencedor':>17}"
+    )
+
+    print("-" * 105)
+
+    total_lula = 0
+    total_flavio = 0
+
+    # Ordena pela votação do candidato derrotado
+    lista = sorted(
+        lista,
+        key=lambda r: min(r["lula"], r["flavio"]),
+        reverse=True
+    )
+
+    for r in lista:
+
+        diferenca = abs(r["lula"] - r["flavio"])
+
+        if r["lula"] > r["flavio"]:
+            vencedor = "Lula"
+        elif r["flavio"] > r["lula"]:
+            vencedor = "Flávio"
+        else:
+            vencedor = "Empate"
+
+        print(
+            f"{r['sigla']:<5}"
+            f"{r['estado']:<25}"
+            f"{formatar(r['lula']):>17}"
+            f"{formatar(r['flavio']):>19}"
+            f"{formatar(diferenca):>17}"
+            f"{vencedor:>17}"
+        )
+
+        total_lula += r["lula"]
+        total_flavio += r["flavio"]
+
+    print("-" * 105)
+
+    print(
+        f"{'TOTAL':<30}"
+        f"{formatar(total_lula):>17}"
+        f"{formatar(total_flavio):>19}"
+        f"{formatar(abs(total_lula-total_flavio)):>17}"
+    )
+
+    print(f"\nQuantidade de estados: {len(lista)}")
+
+
+# ==========================================================
+# PROGRAMA PRINCIPAL
+# ==========================================================
 
 def main():
-    print("=" * 65)
-    print(" ELEIÇÕES PRESIDENCIAIS 2026 - SEGUNDO TURNO")
-    print(" Fonte: API oficial do Tribunal Superior Eleitoral")
-    print("=" * 65)
+
+    print("=" * 80)
+    print("ELEIÇÕES PRESIDENCIAIS 2026 - SEGUNDO TURNO")
+    print("Fonte: Tribunal Superior Eleitoral")
+    print("=" * 80)
 
     resultados = []
 
+    # ------------------------------------------------------
+    # CONSULTAR OS ESTADOS
+    # ------------------------------------------------------
+
     print("\nConsultando os 27 estados...\n")
 
-    # Consultas paralelas para acelerar a coleta
     with ThreadPoolExecutor(max_workers=5) as executor:
+
         tarefas = {
-            executor.submit(consultar_estado, uf): uf
-            for uf in ESTADOS
+            executor.submit(
+                consultar_local, uf, nome
+            ): uf
+            for uf, nome in ESTADOS.items()
         }
 
         for tarefa in as_completed(tarefas):
+
             uf = tarefas[tarefa]
+
             try:
                 resultado = tarefa.result()
                 resultados.append(resultado)
-                print(f"[OK] {uf} - {resultado['estado']}")
+
+                print(f"[OK] {uf} - {ESTADOS[uf]}")
+
             except Exception as erro:
                 print(f"[ERRO] {uf}: {erro}")
 
+    if len(resultados) != 27:
+        print("\nERRO: Consulta incompleta.")
+        print(f"Estados consultados: {len(resultados)}/27")
+        return
+
     resultados.sort(key=lambda x: x["estado"])
 
-    if len(resultados) != 27:
-        print("\nATENÇÃO: Nem todos os estados foram consultados.")
-        print(f"Estados obtidos: {len(resultados)}/27")
+    # ------------------------------------------------------
+    # CONSULTAR EXTERIOR
+    # ------------------------------------------------------
+
+    print("\nConsultando exterior...")
+
+    try:
+        exterior = consultar_local("zz", "Exterior")
+        print("[OK] Exterior")
+
+    except Exception as erro:
+        print(f"[ERRO] Exterior: {erro}")
         return
+
+    lula_exterior = exterior["lula"]
+    flavio_exterior = exterior["flavio"]
+
+    # ------------------------------------------------------
+    # CLASSIFICAR ESTADOS
+    # ------------------------------------------------------
 
     lula_estados = []
     flavio_estados = []
 
-    soma_lula = 0
-    soma_flavio = 0
+    lula_perdeu = []
+    flavio_perdeu = []
 
-    # Classificação dos estados
     for r in resultados:
+
         if r["lula"] > r["flavio"]:
             lula_estados.append(r)
-            soma_lula += r["lula"]
+            flavio_perdeu.append(r)
+
         elif r["flavio"] > r["lula"]:
             flavio_estados.append(r)
-            soma_flavio += r["flavio"]
+            lula_perdeu.append(r)
 
-    # Exibição dos resultados
-    def mostrar_lista(titulo, lista, candidato):
-        print("\n" + "=" * 65)
-        print(titulo)
-        print("=" * 65)
+    # ------------------------------------------------------
+    # 1 - ESTADOS VENCIDOS POR LULA
+    # ------------------------------------------------------
 
-        for r in lista:
-            votos = r[candidato]
-            print(
-                f"{r['sigla']:3} | "
-                f"{r['estado']:<25} | "
-                f"{formatar(votos):>12} votos"
-            )
-
-        print("-" * 65)
-        print(f"Quantidade de estados: {len(lista)}")
-
-    mostrar_lista(
+    mostrar_comparativo(
         "ESTADOS VENCIDOS POR LULA",
-        lula_estados,
-        "lula"
+        lula_estados
     )
 
-    mostrar_lista(
-        "ESTADOS VENCIDOS POR FLÁVIO BOLSONARO",
-        flavio_estados,
-        "flavio"
+    # ------------------------------------------------------
+    # 2 - ESTADOS PERDIDOS POR LULA
+    # ------------------------------------------------------
+
+    mostrar_comparativo(
+        "ESTADOS PERDIDOS POR LULA",
+        lula_perdeu
     )
 
-    # Soma dos votos nos estados vencidos
-    print("\n" + "=" * 65)
-    print("SOMA DOS VOTOS NOS ESTADOS VENCIDOS")
-    print("=" * 65)
+    # ------------------------------------------------------
+    # 3 - ESTADOS VENCIDOS POR FLÁVIO
+    # ------------------------------------------------------
 
-    print(f"Lula:           {formatar(soma_lula)} votos")
-    print(f"Flávio:         {formatar(soma_flavio)} votos")
-
-    print("\n" + "=" * 65)
-    print("TOTAL NACIONAL - ARQUIVO OFICIAL DO TSE")
-    print("=" * 65)
-
-    url_brasil = (
-        f"{BASE}/br/"
-        "br-c0001-e006258-u.json"
+    mostrar_comparativo(
+        "ESTADOS VENCIDOS POR FLÁVIO",
+        flavio_estados
     )
 
-    dados_brasil = baixar_json(url_brasil)
-    total_nacional = extrair_candidatos(dados_brasil)
+    # ------------------------------------------------------
+    # 4 - ESTADOS PERDIDOS POR FLÁVIO
+    # ------------------------------------------------------
 
-    total_lula = total_nacional["13"]
-    total_flavio = total_nacional["22"]
+    mostrar_comparativo(
+        "ESTADOS PERDIDOS POR FLÁVIO",
+        flavio_perdeu
+    )
 
-    print(f"Lula:           {formatar(total_lula)} votos")
-    print(f"Flávio:         {formatar(total_flavio)} votos")
+    # ------------------------------------------------------
+    # 5 - EXTERIOR
+    # ------------------------------------------------------
 
-    diferenca = abs(total_lula - total_flavio)
+    print("\n" + "=" * 80)
+    print("VOTAÇÃO NO EXTERIOR")
+    print("=" * 80)
 
-    print(f"\nDiferença:      {formatar(diferenca)} votos")
+    print(f"Lula:   {formatar(lula_exterior)} votos")
+    print(f"Flávio: {formatar(flavio_exterior)} votos")
 
-    if total_lula > total_flavio:
-        print("\nResultado nacional: Lula recebeu mais votos.")
-    elif total_flavio > total_lula:
-        print("\nResultado nacional: Flávio recebeu mais votos.")
+    # ------------------------------------------------------
+    # 6 - RESUMO DOS ESTADOS
+    # ------------------------------------------------------
+
+    lula_vencidos = sum(r["lula"] for r in lula_estados)
+    lula_perdidos = sum(r["lula"] for r in lula_perdeu)
+
+    flavio_vencidos = sum(r["flavio"] for r in flavio_estados)
+    flavio_perdidos = sum(r["flavio"] for r in flavio_perdeu)
+
+    print("\n" + "=" * 80)
+    print("RESUMO DA DISTRIBUIÇÃO DOS VOTOS")
+    print("=" * 80)
+
+    print("\nLULA:")
+    print(f"Estados vencidos: {formatar(lula_vencidos)}")
+    print(f"Estados perdidos: {formatar(lula_perdidos)}")
+    print(f"Exterior:         {formatar(lula_exterior)}")
+    print(f"Total:         {formatar(lula_vencidos + lula_perdidos + lula_exterior)}")
+
+
+    print("\nFLÁVIO:")
+    print(f"Estados vencidos: {formatar(flavio_vencidos)}")
+    print(f"Estados perdidos: {formatar(flavio_perdidos)}")
+    print(f"Exterior:         {formatar(flavio_exterior)}")
+    print(f"Total:         {formatar(flavio_vencidos + flavio_perdidos + flavio_exterior)}")
+
+    # ------------------------------------------------------
+    # 7 - ESTADOS VENCIDOS + EXTERIOR
+    # ------------------------------------------------------
+
+    # lula_subtotal = lula_vencidos + lula_exterior
+    # flavio_subtotal = flavio_vencidos + flavio_exterior
+
+    # print("\n" + "=" * 80)
+    # print("ESTADOS VENCIDOS + EXTERIOR")
+    # print("=" * 80)
+
+    # print(f"Lula:   {formatar(lula_subtotal)}")
+    # print(f"Flávio: {formatar(flavio_subtotal)}")
+
+    # ------------------------------------------------------
+    # 8 - TOTAL NACIONAL
+    # ------------------------------------------------------
+
+    todos_lula = lula_vencidos + lula_perdidos + lula_exterior
+    todos_flavio = flavio_vencidos + flavio_perdidos + flavio_exterior
+
+    diferenca = abs(todos_lula - todos_flavio)
+
+    print("\n" + "=" * 80)
+    print("TOTAL NACIONAL - TODAS AS UFs + EXTERIOR")
+    print("=" * 80)
+
+    print(f"Lula:      {formatar(todos_lula)} votos")
+    print(f"Flávio:    {formatar(todos_flavio)} votos")
+    print(f"Diferença: {formatar(diferenca)} votos")
+
+    if todos_lula > todos_flavio:
+        print("\nMAIOR TOTAL DE VOTOS: LULA")
+
+    elif todos_flavio > todos_lula:
+        print("\nMAIOR TOTAL DE VOTOS: FLÁVIO BOLSONARO")
+
     else:
-        print("\nResultado nacional: empate.")
+        print("\nEMPATE")
 
-    # Conferência da soma dos estados
-    print("\n" + "=" * 65)
-    print("CONFERÊNCIA DOS DADOS")
-    print("=" * 65)
+    # ------------------------------------------------------
+    # 9 - CONFERÊNCIA
+    # ------------------------------------------------------
 
-    print(f"Soma Lula (27 UFs):   {formatar(sum(r['lula'] for r in resultados))}")
-    print(f"Soma Flávio (27 UFs): {formatar(sum(r['flavio'] for r in resultados))}")
+    # print("\n" + "=" * 80)
+    # print("CONFERÊNCIA DOS DADOS")
+    # print("=" * 80)
 
-    print("\nConsulta concluída.")
-    print("Fonte: https://resultados.tse.jus.br/")
+    # print(
+    #     f"Total UFs Lula:   "
+    #     f"{formatar(sum(r['lula'] for r in resultados))}"
+    # )
+
+    # print(
+    #     f"Total UFs Flávio: "
+    #     f"{formatar(sum(r['flavio'] for r in resultados))}"
+    # )
+
+    # print(f"Exterior Lula:    {formatar(lula_exterior)}")
+    # print(f"Exterior Flávio:  {formatar(flavio_exterior)}")
+
+    print("\nFonte: https://resultados.tse.jus.br/")
+    print("Consulta concluída.")
 
 
 if __name__ == "__main__":
